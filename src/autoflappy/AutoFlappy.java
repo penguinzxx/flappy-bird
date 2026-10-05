@@ -15,14 +15,16 @@ public class AutoFlappy {
     private static final String SETTINGS_FILE = "autoflappy.properties";
 
     // Game area on screen, picked by hovering over its corners during setup
-    private int gameLeft = -1;
-    private int gameTop = -1;
-    private int gameRight = -1;
-    private int gameBottom = -1;
+    // Coordinates can be negative on a second monitor left of or above the main one
+    private boolean setUp = false;
+    private int gameLeft;
+    private int gameTop;
+    private int gameRight;
+    private int gameBottom;
 
     // Horizontal band flappy lives in, found automatically during setup
-    private int flappyLeft = -1;
-    private int flappyRight = -1;
+    private int flappyLeft;
+    private int flappyRight;
 
     // Butterfly body
     private final int[] flappyColor = {201, 168, 242};
@@ -109,7 +111,7 @@ public class AutoFlappy {
     }
 
     private boolean isSetUp() {
-        return gameLeft >= 0 && flappyLeft >= 0;
+        return setUp;
     }
 
     private int gameWidth() {
@@ -335,6 +337,7 @@ public class AutoFlappy {
         // A little extra room so a tilting butterfly stays in view
         flappyLeft = gameLeft + Math.max(0, band[0] - 5);
         flappyRight = gameLeft + Math.min(game.getWidth(), band[1] + 6);
+        setUp = true;
         saveSettings();
 
         System.out.println("--------------------------------------------------");
@@ -372,10 +375,10 @@ public class AutoFlappy {
             flappyLeft = Integer.parseInt(props.getProperty("flappyLeft"));
             flappyRight = Integer.parseInt(props.getProperty("flappyRight"));
             targetPercent = Double.parseDouble(props.getProperty("targetPercent"));
+            setUp = true;
             System.out.println("Loaded your setup from last time (type setup to redo it).");
         } catch (Exception e) {
-            gameLeft = -1;
-            flappyLeft = -1;
+            setUp = false;
         }
     }
 
