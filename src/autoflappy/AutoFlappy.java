@@ -44,6 +44,7 @@ public class AutoFlappy {
     private static final double PIPE_ROW = 0.03;       // above the score, where every pipe is visible
     private static final double MIN_ROW = 0.80;        // flap if flappy drops below this, whatever the pipes say
     private static final double PIPE_OVERHANG = 0.03;  // flowers stick out past the stem
+    private static final double FLAPPY_MARGIN = 0.05;  // extra room to search for flappy on each side
 
     // Moving the mouse further than this from where AutoFlappy parked it stops the bot
     private static final int STOP_DISTANCE = 30;
@@ -150,9 +151,16 @@ public class AutoFlappy {
         int minRow = (int) (gameHeight() * MIN_ROW);
         int scanLeft = Math.max(gameLeft, flappyLeft - (int) (gameWidth() * PIPE_OVERHANG));
         Rectangle pipeRowArea = new Rectangle(scanLeft, gameTop + pipeRow, gameRight - scanLeft, 1);
-        Rectangle flappyArea = new Rectangle(flappyLeft, gameTop, flappyRight - flappyLeft, gameHeight());
+        // Search well beyond where the butterfly sat during setup: it tilts as it rises and falls
+        int widen = Math.max(flappyRight - flappyLeft, (int) (gameWidth() * FLAPPY_MARGIN));
+        int searchLeft = Math.max(gameLeft, flappyLeft - widen);
+        int searchRight = Math.min(gameRight, flappyRight + widen);
+        Rectangle flappyArea = new Rectangle(searchLeft, gameTop, searchRight - searchLeft, gameHeight());
 
         int[] lastGap = null;
+        int lastFlappyY = -1;
+        boolean lostFlappy = false;
+        long lastStatus = 0;
 
         // Flap once so the round starts
         clickFlappy();
@@ -179,10 +187,33 @@ public class AutoFlappy {
 
             int flappyY = findFlappy(rb.createScreenCapture(flappyArea));
             if (flappyY < 0) {
-                continue;
+                // Lost sight of it for a moment; act on where it was last seen
+                if (lastFlappyY < 0) {
+                    continue;
+                }
+                if (!lostFlappy) {
+                    System.out.println("Can't see the butterfly - using its last position.");
+                    lostFlappy = true;
+                }
+                flappyY = lastFlappyY;
+            } else {
+                if (lostFlappy) {
+                    System.out.println("Found the butterfly again.");
+                    lostFlappy = false;
+                }
+                lastFlappyY = flappyY;
             }
 
-            if (flappyY > target || flappyY > minRow) {
+            boolean click = flappyY > target || flappyY > minRow;
+
+            // A status line twice a second, to see what AutoFlappy sees if something goes wrong
+            if (System.currentTimeMillis() - lastStatus > 500) {
+                System.out.println("Butterfly at " + flappyY + ", aiming for " + (int) target +
+                        (pipeX >= 0 ? "" : " (no pipe seen)") + (click ? " -> flap" : ""));
+                lastStatus = System.currentTimeMillis();
+            }
+
+            if (click) {
                 clickFlappy();
             }
         }
