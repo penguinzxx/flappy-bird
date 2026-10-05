@@ -3,33 +3,32 @@ package autoflappy;
 import java.awt.*;
 import java.awt.event.InputEvent;
 import java.awt.image.BufferedImage;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.URI;
-import java.net.URLConnection;
-import java.util.InputMismatchException;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.Properties;
 import java.util.Scanner;
 
 public class AutoFlappy {
 
-    private static final String version = "3.4.7";
+    private static final String SETTINGS_FILE = "autoflappy.properties";
 
-    private int flappyX = 487;
-    private int flappyWidth = 40;
+    // Game area on screen, picked by hovering over its corners during setup
+    private int gameLeft = -1;
+    private int gameTop = -1;
+    private int gameRight = -1;
+    private int gameBottom = -1;
 
-    private int pipeX = 743;
-    private int checkPipeX = 400;
-
-    private int topY = 460;
-    private int bottomY = 1157;
-
-    private int minY = 1057;
+    // Horizontal band flappy lives in, found automatically during setup
+    private int flappyLeft = -1;
+    private int flappyRight = -1;
 
     // Butterfly body
-    private int[] flappyColor = {201, 168, 242};
+    private final int[] flappyColor = {201, 168, 242};
 
     // Pipe stem and flower petals; anything else (sky, clouds, sparkles, hills) is ignored
-    private int[][] pipeColors = {
+    private final int[][] pipeColors = {
             {177, 228, 198},
             {245, 216, 106},
             {255, 240, 160}
@@ -37,11 +36,15 @@ public class AutoFlappy {
 
     private double colorTolerancePercent = 10;
 
-    private int range = 400;
-    private double targetPercent = 0.55;
+    private double targetPercent = 0.5;
 
-    // Row (relative to topY) used to spot pipes; keep it above the score
-    private static final int PIPE_ROW = 5;
+    // Positions inside the game area, as a fraction of its height/width
+    private static final double PIPE_ROW = 0.03;       // above the score, where every pipe is visible
+    private static final double MIN_ROW = 0.80;        // flap if flappy drops below this, whatever the pipes say
+    private static final double PIPE_OVERHANG = 0.03;  // flowers stick out past the stem
+
+    // Moving the mouse further than this from where AutoFlappy parked it stops the bot
+    private static final int STOP_DISTANCE = 30;
 
     private static final Scanner sc = new Scanner(System.in);
 
@@ -53,19 +56,10 @@ public class AutoFlappy {
         System.out.println("/_/   \\_\\__,_|\\__\\___/|_|   |_|\\__,_| .__/| .__/ \\__, |");
         System.out.println("                                    |_|   |_|    |___/");
         System.out.println("--------------------------------------------------");
-        System.out.println("   ============ PROGRAM SOURCE CODE ==========");
-        System.out.println("   = https://github.com/itsmarsss/AutoFlappy =");
-        System.out.println("   ===========================================");
         System.out.println("      Welcome to AutoFlappy's Control Prompt");
         System.out.println();
-        System.out.println("Purpose: This program was made to automatically play Flappy bird for you since you're bad at it.");
-        System.out.println();
-        System.out.println("Note: This program does not have a kill switch so good luck.");
-        System.out.println();
-        System.out.println("Warning[1]: Use this program at your own risk, I (the creator of this program) will not be liable for any issues that this program causes to your computer (or sanity?)");
-        System.out.println();
-        System.out.println("Version:" + versionCheck());
-        System.out.println();
+
+        loadSettings();
 
         try {
             commandPrompt();
@@ -73,24 +67,31 @@ public class AutoFlappy {
             System.out.println("Error with robot class: " + e.getMessage());
             System.exit(1);
         }
-
-
     }
 
     private void commandPrompt() throws AWTException {
         help();
+        if (!isSetUp()) {
+            System.out.println();
+            System.out.println("First time? Type setup and press Enter.");
+        }
         String input;
         while (true) {
             System.out.println();
             System.out.print("Option:");
-            input = sc.next();
-            sc.nextLine();
+            if (!sc.hasNextLine()) {
+                return;
+            }
+            input = sc.nextLine().trim();
             switch (input) {
                 case "help":
                     help();
                     break;
                 case "setup":
                     setupAutoFlappy();
+                    break;
+                case "target":
+                    setTarget();
                     break;
                 case "start":
                     startAutoFlappy();
@@ -99,69 +100,185 @@ public class AutoFlappy {
                     System.out.println("ByeBye");
                     System.exit(0);
                     break;
+                case "":
+                    break;
                 default:
                     System.out.println("Unknown option; [help] for list of options.");
             }
         }
     }
 
-    private int top = -1;
-    private int bottom = -1;
+    private boolean isSetUp() {
+        return gameLeft >= 0 && flappyLeft >= 0;
+    }
 
-    private Rectangle pipe;
+    private int gameWidth() {
+        return gameRight - gameLeft;
+    }
+
+    private int gameHeight() {
+        return gameBottom - gameTop;
+    }
 
     private Robot rb;
 
-    private double target;
-
     private void startAutoFlappy() throws AWTException {
+        if (!isSetUp()) {
+            System.out.println("Run setup first.");
+            return;
+        }
         rb = new Robot();
-        Rectangle flappy = new Rectangle(flappyX - (flappyWidth / 2), topY, flappyWidth, bottomY - topY);
-        pipe = new Rectangle(pipeX - (range / 2), topY, range, bottomY - topY);
-        top = -1;
-        bottom = -1;
+
+        // Park the mouse in the game so clicks land there
+        rb.mouseMove(gameLeft + gameWidth() / 2, gameTop + gameHeight() / 3);
+        rb.delay(200);
+        Point parked = mousePosition();
+
+        System.out.println("Starting! Move your mouse to stop.");
+        for (int i = 3; i > 0; i--) {
+            System.out.println(i + "...");
+            rb.delay(1000);
+            if (movedAway(parked)) {
+                System.out.println("Stopped.");
+                return;
+            }
+        }
+
+        int pipeRow = (int) (gameHeight() * PIPE_ROW);
+        int minRow = (int) (gameHeight() * MIN_ROW);
+        int scanLeft = Math.max(gameLeft, flappyLeft - (int) (gameWidth() * PIPE_OVERHANG));
+        Rectangle pipeRowArea = new Rectangle(scanLeft, gameTop + pipeRow, gameRight - scanLeft, 1);
+        Rectangle flappyArea = new Rectangle(flappyLeft, gameTop, flappyRight - flappyLeft, gameHeight());
+
+        int[] lastGap = null;
+
+        // Flap once so the round starts
+        clickFlappy();
 
         while (true) {
-            // A pipe at checkPipeX has passed flappy, so measure the next one
-            BufferedImage checkPipe = rb.createScreenCapture(new Rectangle(checkPipeX, topY + PIPE_ROW, 1, 1));
-            if (top < 0 || isPipeColor(checkPipe.getRGB(0, 0))) {
-                updateTopBottom(rb.createScreenCapture(pipe));
+            if (movedAway(parked)) {
+                System.out.println("Mouse moved - stopped.");
+                return;
             }
 
-            int flappyY = findFlappy(rb.createScreenCapture(flappy));
+            // Aim for the gap in the nearest pipe that hasn't fully passed flappy yet
+            double target = gameHeight() * 0.5;
+            int pipeX = findPipeColumn(rb.createScreenCapture(pipeRowArea));
+            if (pipeX >= 0) {
+                int[] gap = findGap(rb.createScreenCapture(new Rectangle(scanLeft + pipeX, gameTop, 1, gameHeight())));
+                if (gap != null) {
+                    target = gap[1] + (gap[0] - gap[1]) * targetPercent;
+                    if (lastGap == null || Math.abs(gap[0] - lastGap[0]) > 5) {
+                        System.out.println("Next gap: " + gap[0] + " to " + gap[1] + ", aiming for " + (int) target);
+                    }
+                    lastGap = gap;
+                }
+            }
+
+            int flappyY = findFlappy(rb.createScreenCapture(flappyArea));
             if (flappyY < 0) {
                 continue;
             }
 
-            if (((flappyY > target) && (top > 0 && bottom > 0)) ||
-                    (flappyY + topY > minY)) {
-                System.out.println("Flappy at y = " + flappyY + "\t Target at y = " + target);
+            if (flappyY > target || flappyY > minRow) {
                 clickFlappy();
             }
         }
     }
 
+    private static Point mousePosition() {
+        PointerInfo info = MouseInfo.getPointerInfo();
+        return info == null ? null : info.getLocation();
+    }
+
+    private static boolean movedAway(Point parked) {
+        Point now = mousePosition();
+        return parked != null && now != null && now.distance(parked) > STOP_DISTANCE;
+    }
+
     private void clickFlappy() {
-        try {
-            rb.mousePress(InputEvent.BUTTON1_DOWN_MASK);
-            Thread.sleep(100);
-            rb.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
-            System.out.println("Clicked");
-        } catch (Exception e) {
-            System.out.println("Error with clicking: " + e.getMessage());
-        }
+        rb.mousePress(InputEvent.BUTTON1_DOWN_MASK);
+        rb.delay(100);
+        rb.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
     }
 
     // Returns the highest row containing flappy's color, or -1 if flappy is not visible
     int findFlappy(BufferedImage findFlappy) {
-        for (int i = 0; i < findFlappy.getHeight(); i++) {
-            for (int j = 0; j < findFlappy.getWidth(); j++) {
-                if (isColorWithinTolerance(findFlappy.getRGB(j, i), flappyColor)) {
+        for (int i = 0; i < findFlappy.getHeight() - 1; i++) {
+            for (int j = 0; j < findFlappy.getWidth() - 1; j++) {
+                if (isFlappyAt(findFlappy, j, i)) {
                     return i;
                 }
             }
         }
         return -1;
+    }
+
+    // Returns the middle of the leftmost pipe in a one-pixel-tall strip, or -1 if there is none
+    int findPipeColumn(BufferedImage row) {
+        int start = -1;
+        int end = -1;
+        for (int i = 0; i < row.getWidth(); i++) {
+            if (isPipeColor(row.getRGB(i, 0))) {
+                if (start < 0) {
+                    start = i;
+                }
+                end = i;
+            } else if (start >= 0) {
+                break;
+            }
+        }
+        return start < 0 ? -1 : (start + end) / 2;
+    }
+
+    // Returns {top, bottom} of the gap in a one-pixel-wide column through a pipe, or null.
+    // The gap is the longest run of non-pipe pixels with pipe both above and below it;
+    // this skips small runs such as the flower centers and the score
+    int[] findGap(BufferedImage column) {
+        int gapTop = -1;
+        int gapBottom = -1;
+        int runStart = -1;
+        boolean seenPipe = false;
+        for (int i = 0; i < column.getHeight(); i++) {
+            if (isPipeColor(column.getRGB(0, i))) {
+                if (runStart >= 0 && seenPipe && i - runStart > gapBottom - gapTop) {
+                    gapTop = runStart;
+                    gapBottom = i;
+                }
+                seenPipe = true;
+                runStart = -1;
+            } else if (runStart < 0) {
+                runStart = i;
+            }
+        }
+        return gapTop < 0 ? null : new int[]{gapTop, gapBottom};
+    }
+
+    // Returns {left, right} of flappy's color in the image, or null if flappy is not visible
+    int[] findFlappyBand(BufferedImage game) {
+        int left = -1;
+        int right = -1;
+        for (int x = 0; x < game.getWidth() - 1; x++) {
+            for (int y = 0; y < game.getHeight() - 1; y++) {
+                if (isFlappyAt(game, x, y)) {
+                    if (left < 0) {
+                        left = x;
+                    }
+                    right = x;
+                    break;
+                }
+            }
+        }
+        return left < 0 ? null : new int[]{left, right};
+    }
+
+    // Flappy's body is a solid patch, so require a 2x2 block; this ignores the thin
+    // lavender-ish fringe where pipe outlines blend into the sky
+    private boolean isFlappyAt(BufferedImage image, int x, int y) {
+        return isColorWithinTolerance(image.getRGB(x, y), flappyColor) &&
+                isColorWithinTolerance(image.getRGB(x + 1, y), flappyColor) &&
+                isColorWithinTolerance(image.getRGB(x, y + 1), flappyColor) &&
+                isColorWithinTolerance(image.getRGB(x + 1, y + 1), flappyColor);
     }
 
     private boolean isPipeColor(int rgb) {
@@ -184,179 +301,112 @@ public class AutoFlappy {
                 Math.abs(b - color[2]) <= tolerance;
     }
 
-    void updateTopBottom(BufferedImage findPipe) {
-        // Find the leftmost pipe in range and use the middle of it
-        int start = -1;
-        int end = -1;
-        for (int i = 0; i < findPipe.getWidth(); i++) {
-            if (isPipeColor(findPipe.getRGB(i, PIPE_ROW))) {
-                if (start < 0) {
-                    start = i;
-                }
-                end = i;
-            } else if (start >= 0) {
-                break;
-            }
-        }
-        if (start < 0) {
+    private void setupAutoFlappy() throws AWTException {
+        System.out.println("Open the game so the butterfly is visible, and don't move the game window afterwards.");
+        System.out.println();
+        System.out.println("1) Put your mouse on the TOP-LEFT corner of the game (just inside the frame), then press Enter here.");
+        sc.nextLine();
+        Point topLeft = mousePosition();
+        System.out.println("2) Put your mouse on the BOTTOM-RIGHT corner of the game (just inside the frame), then press Enter here.");
+        sc.nextLine();
+        Point bottomRight = mousePosition();
+
+        if (topLeft == null || bottomRight == null) {
+            System.out.println("Couldn't read the mouse position. Try again.");
             return;
         }
-        int x = (start + end) / 2;
-
-        // The gap is the longest run of non-pipe pixels with pipe both above and below it;
-        // this skips small runs such as the flower centers and the score
-        int gapTop = -1;
-        int gapBottom = -1;
-        int runStart = -1;
-        boolean seenPipe = false;
-        for (int i = 0; i < findPipe.getHeight(); i++) {
-            if (isPipeColor(findPipe.getRGB(x, i))) {
-                if (runStart >= 0 && seenPipe && i - runStart > gapBottom - gapTop) {
-                    gapTop = runStart;
-                    gapBottom = i;
-                }
-                seenPipe = true;
-                runStart = -1;
-            } else if (runStart < 0) {
-                runStart = i;
-            }
-        }
-        if (gapTop < 0) {
+        if (bottomRight.x - topLeft.x < 50 || bottomRight.y - topLeft.y < 50) {
+            System.out.println("Those corners don't look right (the second one should be below and to the right of the first). Try again.");
             return;
         }
 
-        top = gapTop;
-        bottom = gapBottom;
-        target = (bottom + (top - bottom) * targetPercent);
-        System.out.println("Top:Low bounds - " + top + ":" + bottom);
-        System.out.println("Target - " + target);
-    }
-
-    private void setupAutoFlappy() {
-        flappyX = readInt("Where to find flappy? (x coordinates):", 0, Integer.MAX_VALUE);
-        flappyWidth = readInt("Width to search for flappy? (pixels):", 1, Integer.MAX_VALUE);
-        pipeX = readInt("Where to find pipes? (x coordinates):", 0, Integer.MAX_VALUE);
-        range = readInt("Range for finding pipes? (range):", 1, Integer.MAX_VALUE);
-        checkPipeX = readInt("Where to find passed pipes? (x coordinates):", 0, Integer.MAX_VALUE);
-        topY = readInt("Game window highest? (y coordinates):", 0, Integer.MAX_VALUE);
-        bottomY = readInt("Game window lowest? (y coordinates):", topY + PIPE_ROW + 1, Integer.MAX_VALUE);
-        minY = readInt("Lowest allowed flappy? (y coordinates):", 0, Integer.MAX_VALUE);
-        targetPercent = readDouble("Target value, percentage from bottom to top? (percentage):", 0, 100) / 100;
-
-        System.out.println("--------------------------------------------------");
-        System.out.println("\t~ Look for Flappy at x = " + flappyX + " (width " + flappyWidth + ") from y = " + topY + " to " + bottomY);
-        System.out.println("\t~ Look for Pipes at x = " + pipeX + " from y = " + topY + " to " + bottomY + " with range " + range);
-        System.out.println("\t~ Look for passed Pipes at x = " + checkPipeX + " at y = " + (topY + PIPE_ROW));
-        System.out.println("\t~ Keep Flappy above " + (targetPercent * 100) + "% of the distance from bottom to top of pipes.");
-        System.out.println("--------------------------------------------------");
-
-        flappyColor = readColor("Flappy color? (r g b):");
-
-        int pipeColorCount = readInt("How many pipe colors? (stem, flower petals, etc.):", 1, Integer.MAX_VALUE);
-        pipeColors = new int[pipeColorCount][];
-        for (int i = 0; i < pipeColorCount; i++) {
-            pipeColors[i] = readColor("Pipe color #" + (i + 1) + "? (r g b):");
+        BufferedImage game = new Robot().createScreenCapture(
+                new Rectangle(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y));
+        int[] band = findFlappyBand(game);
+        if (band == null) {
+            System.out.println("Couldn't find the butterfly inside those corners. Make sure the game is visible and not covered, then try again.");
+            return;
         }
 
-        colorTolerancePercent = readDouble("Color check tolerance (percentage):", 0, 100);
+        gameLeft = topLeft.x;
+        gameTop = topLeft.y;
+        gameRight = bottomRight.x;
+        gameBottom = bottomRight.y;
+        // A little extra room so a tilting butterfly stays in view
+        flappyLeft = gameLeft + Math.max(0, band[0] - 5);
+        flappyRight = gameLeft + Math.min(game.getWidth(), band[1] + 6);
+        saveSettings();
 
         System.out.println("--------------------------------------------------");
-        System.out.println("\t~ Look for Flappy with color " + colorString(flappyColor));
-        for (int[] color : pipeColors) {
-            System.out.println("\t~ Look for Pipes with color " + colorString(color));
-        }
-        System.out.println("\t~ Use color check tolerance of " + colorTolerancePercent + "%");
+        System.out.println("\t~ Game area: (" + gameLeft + ", " + gameTop + ") to (" + gameRight + ", " + gameBottom + ")");
+        System.out.println("\t~ Butterfly found between x = " + flappyLeft + " and " + flappyRight);
         System.out.println("--------------------------------------------------");
+        System.out.println("All set! Type start to play.");
     }
 
-    private static int readInt(String prompt, int min, int max) {
-        while (true) {
-            System.out.println(prompt);
-            try {
-                int value = sc.nextInt();
-                if (value >= min && value <= max) {
-                    return value;
-                }
-            } catch (InputMismatchException e) {
-                sc.nextLine();
+    private void setTarget() {
+        System.out.println("Where in the gap should the butterfly fly? 0 = bottom edge, 100 = top edge (now " + Math.round(targetPercent * 100) + "):");
+        System.out.println("Tip: go higher if it hits the bottom flowers, lower if it hits the top ones.");
+        String line = sc.nextLine().trim();
+        try {
+            double value = Double.parseDouble(line);
+            if (value < 0 || value > 100) {
+                throw new NumberFormatException();
             }
-            System.out.println("Please enter a whole number from " + min + " to " + max + ".");
+            targetPercent = value / 100;
+            saveSettings();
+            System.out.println("Target set to " + Math.round(value) + ".");
+        } catch (NumberFormatException e) {
+            System.out.println("Please enter a number from 0 to 100.");
         }
     }
 
-    private static double readDouble(String prompt, double min, double max) {
-        while (true) {
-            System.out.println(prompt);
-            try {
-                double value = sc.nextDouble();
-                if (value >= min && value <= max) {
-                    return value;
-                }
-            } catch (InputMismatchException e) {
-                sc.nextLine();
-            }
-            System.out.println("Please enter a number from " + min + " to " + max + ".");
+    private void loadSettings() {
+        Properties props = new Properties();
+        try (InputStream in = new FileInputStream(SETTINGS_FILE)) {
+            props.load(in);
+            gameLeft = Integer.parseInt(props.getProperty("gameLeft"));
+            gameTop = Integer.parseInt(props.getProperty("gameTop"));
+            gameRight = Integer.parseInt(props.getProperty("gameRight"));
+            gameBottom = Integer.parseInt(props.getProperty("gameBottom"));
+            flappyLeft = Integer.parseInt(props.getProperty("flappyLeft"));
+            flappyRight = Integer.parseInt(props.getProperty("flappyRight"));
+            targetPercent = Double.parseDouble(props.getProperty("targetPercent"));
+            System.out.println("Loaded your setup from last time (type setup to redo it).");
+        } catch (Exception e) {
+            gameLeft = -1;
+            flappyLeft = -1;
         }
     }
 
-    private static int[] readColor(String prompt) {
-        System.out.println(prompt);
-        return new int[]{
-                readInt("  r:", 0, 255),
-                readInt("  g:", 0, 255),
-                readInt("  b:", 0, 255)
-        };
-    }
-
-    private static String colorString(int[] color) {
-        return "(" + color[0] + ", " + color[1] + ", " + color[2] + ")";
+    private void saveSettings() {
+        Properties props = new Properties();
+        props.setProperty("gameLeft", String.valueOf(gameLeft));
+        props.setProperty("gameTop", String.valueOf(gameTop));
+        props.setProperty("gameRight", String.valueOf(gameRight));
+        props.setProperty("gameBottom", String.valueOf(gameBottom));
+        props.setProperty("flappyLeft", String.valueOf(flappyLeft));
+        props.setProperty("flappyRight", String.valueOf(flappyRight));
+        props.setProperty("targetPercent", String.valueOf(targetPercent));
+        try (OutputStream out = new FileOutputStream(SETTINGS_FILE)) {
+            props.store(out, "AutoFlappy setup");
+        } catch (Exception e) {
+            System.out.println("Couldn't save your setup (" + e.getMessage() + "); you'll need to redo it next time.");
+        }
     }
 
     private void help() {
-        String help = "help\t- this menu" +
+        String help = "setup\t- point at the game so AutoFlappy knows where it is" +
                 "\n" +
-                "setup\t- setup coordinates" +
+                "start\t- start playing (move your mouse to stop)" +
                 "\n" +
-                "start\t- start flappy (read warning)" +
+                "target\t- change how high in the gap the butterfly flies" +
+                "\n" +
+                "help\t- this menu" +
                 "\n" +
                 "quit\t- quit playing AutoFlappy :(";
 
         System.out.println(help);
-    }
-
-    static String versionCheck() {
-        String newest;
-        StringBuilder note = new StringBuilder("Author's Note: ");
-        try {
-            URLConnection uc = URI.create("https://raw.githubusercontent.com/itsmarsss/AutoFlappy/main/newestversion").toURL().openConnection();
-            uc.setConnectTimeout(3000);
-            uc.setReadTimeout(3000);
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(uc.getInputStream()))) {
-                newest = reader.readLine();
-                String line;
-                while ((line = reader.readLine()) != null)
-                    note.append(line).append("\n");
-            }
-
-            if (note.toString().equals("Author's Note: "))
-                note = new StringBuilder();
-
-        } catch (Exception e) {
-            return "Unable to check for version and creator's note";
-        }
-        if (newest == null) {
-            return "Unable to check for version and creator's note";
-        }
-        if (!newest.trim().equals(version)) {
-            return "   [There is a newer version of AutoFlappy]" +
-                    "\n\t##############################################" +
-                    "\n\t   " + version + "(current) >> " + newest + "(newer)" +
-                    "\nNew version: https://github.com/itsmarsss/AutoFlappy/releases" +
-                    "\n\t##############################################" +
-                    "\n" + note;
-        }
-        return " This program is up to date!" +
-                "\n" + note;
     }
 
 }

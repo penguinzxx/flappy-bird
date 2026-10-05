@@ -11,34 +11,24 @@ AutoFlappy
 ## What is AutoFlappy
 AutoFlappy is a program that automatically plays Flappy Bird for you, with a bit of setting up, you can easily beat the World Record to most points achieved in Flappy Bird.
 
-## Download
-### Cloning
-You can clone the repository by doing the following:  
-`git clone https://github.com/itsmarsss/AutoFlappy.git`  
-You can run it in an IDE or build it into a jar, up to you.
-### Lazy download
-If you're a lazy bum like me, head over to [[releases]](https://github.com/itsmarsss/AutoFlappy/releases), and download the most recent version.  
-Make sure to run the jar file in terminal/command prompt, so you can actually issue commands.  
-`java -jar "AutoFlappy-[append version here].jar"`
+## How to use
+1. **Install Java** (one time only): https://adoptium.net/ (click the big download button and install it).
+2. **Download** this repository (green *Code* button → *Download ZIP*) and unzip it.
+3. **Double-click** `Start AutoFlappy (Windows).bat` or `Start AutoFlappy (Mac).command`.
+   - On Mac, if it says it can't be opened, right-click it → *Open*. Also allow your Terminal app under System Settings → Privacy & Security → *Screen Recording* and *Accessibility*.
+4. Open the game so the butterfly is visible, type `setup` and press Enter, then follow the two steps (point your mouse at the top-left and bottom-right corners of the game, pressing Enter each time). It remembers this for next time.
+5. Type `start` and press Enter. AutoFlappy moves the mouse onto the game and starts playing after a 3 second countdown.
+6. **To stop, just move your mouse.**
 
-## Usage
 ### Options
-#### help
-Brings up a help menu
-#### setup
-Setup coordinates the program scans as well as colors of elements on screen.  
-Pipes are found by their own colors (e.g. the stem green and the flower petal yellows), so the background can be a gradient with clouds and decorations. Pick a flappy color that nothing else on screen uses (e.g. the body), and keep the top of the game window above the score so pipes are seen at the very top.
-#### start
-Start AutoFlapping :warning: **Run at your own risk; THERE IS NO KILL KEY** :warning:  
-Once you've started, you cant stop; either close terminal/command prompt or terminate program.
-#### quit
-Quit the program
+- `setup` - point at the game so AutoFlappy knows where it is (redo this if you move the game window)
+- `start` - start playing; move your mouse to stop
+- `target` - change how high in the gap the butterfly flies (raise it if it hits the bottom flowers, lower it if it hits the top ones)
+- `help` - list of options
+- `quit` - quit the program
 
-### Recommendation
-- Set Window scale to 100%, unless you want the program to scan the void.  
-
-- It is recommended that you use [this](https://scratch.mit.edu/projects/781130082/) Scratch project. I've edited its components to better assist the program in screen reading.  
-**Link:** https://scratch.mit.edu/projects/781130082/
+### Building from source
+`javac --release 8 -d out src/autoflappy/*.java && jar cfm AutoFlappy.jar META-INF/MANIFEST.MF -C out .`
 
 ## Video
 <p align="center">Making of the program: https://www.youtube.com/watch?v=-sUVFuqVBdU</p>
