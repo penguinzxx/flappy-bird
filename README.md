@@ -26,7 +26,8 @@ Make sure to run the jar file in terminal/command prompt, so you can actually is
 #### help
 Brings up a help menu
 #### setup
-Setup coordinates the program scans as well as colors of elements on screen
+Setup coordinates the program scans as well as colors of elements on screen.  
+Pipes are found by their own colors (e.g. the stem green and the flower petal yellows), so the background can be a gradient with clouds and decorations. Pick a flappy color that nothing else on screen uses (e.g. the body), and keep the top of the game window above the score so pipes are seen at the very top.
 #### start
 Start AutoFlapping :warning: **Run at your own risk; THERE IS NO KILL KEY** :warning:  
 Once you've started, you cant stop; either close terminal/command prompt or terminate program.
