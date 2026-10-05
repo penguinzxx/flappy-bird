@@ -7,6 +7,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Arrays;
 import java.util.Properties;
 import java.util.Scanner;
 
@@ -42,7 +43,7 @@ public class AutoFlappy {
 
     // Positions inside the game area, as a fraction of its height/width
     private static final double PIPE_ROW = 0.03;       // above the score, where every pipe is visible
-    private static final double MIN_ROW = 0.80;        // flap if flappy drops below this, whatever the pipes say
+    private static final double FLOOR_ROW = 0.86;      // flap if flappy's bottom drops below this, whatever the pipes say
     private static final double PIPE_OVERHANG = 0.03;  // flowers stick out past the stem
     private static final double FLAPPY_MARGIN = 0.05;  // extra room to search for flappy on each side
 
@@ -148,7 +149,7 @@ public class AutoFlappy {
         }
 
         int pipeRow = (int) (gameHeight() * PIPE_ROW);
-        int minRow = (int) (gameHeight() * MIN_ROW);
+        double floor = gameHeight() * FLOOR_ROW;
         int scanLeft = Math.max(gameLeft, flappyLeft - (int) (gameWidth() * PIPE_OVERHANG));
         Rectangle pipeRowArea = new Rectangle(scanLeft, gameTop + pipeRow, gameRight - scanLeft, 1);
         // Search well beyond where the butterfly sat during setup: it tilts as it rises and falls
@@ -158,9 +159,11 @@ public class AutoFlappy {
         Rectangle flappyArea = new Rectangle(searchLeft, gameTop, searchRight - searchLeft, gameHeight());
 
         int[] lastGap = null;
-        int lastFlappyY = -1;
+        int[] flappy = null;
         boolean lostFlappy = false;
         long lastStatus = 0;
+
+        Pilot pilot = new Pilot(gameHeight());
 
         // Flap once so the round starts
         clickFlappy();
@@ -170,51 +173,61 @@ public class AutoFlappy {
                 System.out.println("Mouse moved - stopped.");
                 return;
             }
+            long now = System.currentTimeMillis();
 
-            // Aim for the gap in the nearest pipe that hasn't fully passed flappy yet
-            double target = gameHeight() * 0.5;
-            int pipeX = findPipeColumn(rb.createScreenCapture(pipeRowArea));
-            if (pipeX >= 0) {
-                int[] gap = findGap(rb.createScreenCapture(new Rectangle(scanLeft + pipeX, gameTop, 1, gameHeight())));
-                if (gap != null) {
-                    target = gap[1] + (gap[0] - gap[1]) * targetPercent;
-                    if (lastGap == null || Math.abs(gap[0] - lastGap[0]) > 5) {
-                        System.out.println("Next gap: " + gap[0] + " to " + gap[1] + ", aiming for " + (int) target);
-                    }
-                    lastGap = gap;
-                }
-            }
-
-            int flappyY = findFlappy(rb.createScreenCapture(flappyArea));
-            if (flappyY < 0) {
+            int[] seen = findFlappyBounds(rb.createScreenCapture(flappyArea));
+            if (seen == null) {
                 // Lost sight of it for a moment; act on where it was last seen
-                if (lastFlappyY < 0) {
+                if (flappy == null) {
                     continue;
                 }
                 if (!lostFlappy) {
                     System.out.println("Can't see the butterfly - using its last position.");
                     lostFlappy = true;
                 }
-                flappyY = lastFlappyY;
             } else {
                 if (lostFlappy) {
                     System.out.println("Found the butterfly again.");
                     lostFlappy = false;
                 }
-                lastFlappyY = flappyY;
+                flappy = seen;
+                pilot.see(now, flappy[0], flappy[1]);
             }
 
-            boolean click = flappyY > target || flappyY > minRow;
+            // Fly through the gap in the nearest pipe that hasn't fully passed flappy yet;
+            // with no pipe in sight, just stay around the middle
+            double gapTop = gameHeight() * 0.15;
+            double gapBottom = gameHeight() * 0.85;
+            int[] nextGap = null;
+            int[] pipeXs = findPipeColumns(rb.createScreenCapture(pipeRowArea));
+            if (pipeXs.length > 0) {
+                int[] gap = findGap(rb.createScreenCapture(new Rectangle(scanLeft + pipeXs[0], gameTop, 1, gameHeight())));
+                if (gap != null) {
+                    gapTop = gap[0];
+                    gapBottom = gap[1];
+                    if (lastGap == null || Math.abs(gap[0] - lastGap[0]) > 5) {
+                        System.out.println("Next gap: " + gap[0] + " to " + gap[1]);
+                    }
+                    lastGap = gap;
+                }
+            }
+            // The pipe after that: if its gap is lower, start sinking towards it early
+            if (pipeXs.length > 1) {
+                nextGap = findGap(rb.createScreenCapture(new Rectangle(scanLeft + pipeXs[1], gameTop, 1, gameHeight())));
+            }
+
+            boolean click = pilot.shouldFlap(now, flappy[0], flappy[1], gapTop, gapBottom, nextGap, targetPercent, floor);
 
             // A status line twice a second, to see what AutoFlappy sees if something goes wrong
-            if (System.currentTimeMillis() - lastStatus > 500) {
-                System.out.println("Butterfly at " + flappyY + ", aiming for " + (int) target +
-                        (pipeX >= 0 ? "" : " (no pipe seen)") + (click ? " -> flap" : ""));
-                lastStatus = System.currentTimeMillis();
+            if (now - lastStatus > 500) {
+                System.out.println("Butterfly " + flappy[0] + "-" + flappy[1] + ", gap " + (int) gapTop + "-" + (int) gapBottom +
+                        (pipeXs.length > 0 ? "" : " (no pipe seen)") + ", flap height " + (int) pilot.jump + ", delay " + (int) pilot.delay + "ms" + (click ? " -> flap" : ""));
+                lastStatus = now;
             }
 
             if (click) {
                 clickFlappy();
+                pilot.flapped(now, flappy[1]);
             }
         }
     }
@@ -231,37 +244,43 @@ public class AutoFlappy {
 
     private void clickFlappy() {
         rb.mousePress(InputEvent.BUTTON1_DOWN_MASK);
-        rb.delay(100);
+        rb.delay(20);
         rb.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
     }
 
-    // Returns the highest row containing flappy's color, or -1 if flappy is not visible
-    int findFlappy(BufferedImage findFlappy) {
+    // Returns {top, bottom} rows of flappy, or null if flappy is not visible
+    int[] findFlappyBounds(BufferedImage findFlappy) {
+        int top = -1;
+        int bottom = -1;
         for (int i = 0; i < findFlappy.getHeight() - 1; i++) {
             for (int j = 0; j < findFlappy.getWidth() - 1; j++) {
                 if (isFlappyAt(findFlappy, j, i)) {
-                    return i;
+                    if (top < 0) {
+                        top = i;
+                    }
+                    bottom = i + 1;
+                    break;
                 }
             }
         }
-        return -1;
+        return top < 0 ? null : new int[]{top, bottom};
     }
 
-    // Returns the middle of the leftmost pipe in a one-pixel-tall strip, or -1 if there is none
-    int findPipeColumn(BufferedImage row) {
+    // Returns the middles of the first two pipes in a one-pixel-tall strip, left to right (may be fewer)
+    int[] findPipeColumns(BufferedImage row) {
+        int[] found = new int[2];
+        int count = 0;
         int start = -1;
-        int end = -1;
-        for (int i = 0; i < row.getWidth(); i++) {
-            if (isPipeColor(row.getRGB(i, 0))) {
-                if (start < 0) {
-                    start = i;
-                }
-                end = i;
-            } else if (start >= 0) {
-                break;
+        for (int i = 0; i <= row.getWidth() && count < 2; i++) {
+            boolean pipe = i < row.getWidth() && isPipeColor(row.getRGB(i, 0));
+            if (pipe && start < 0) {
+                start = i;
+            } else if (!pipe && start >= 0) {
+                found[count++] = (start + i - 1) / 2;
+                start = -1;
             }
         }
-        return start < 0 ? -1 : (start + end) / 2;
+        return Arrays.copyOf(found, count);
     }
 
     // Returns {top, bottom} of the gap in a one-pixel-wide column through a pipe, or null.
@@ -379,7 +398,7 @@ public class AutoFlappy {
     }
 
     private void setTarget() {
-        System.out.println("Where in the gap should the butterfly fly? 0 = bottom edge, 100 = top edge (now " + Math.round(targetPercent * 100) + "):");
+        System.out.println("Where in the gap should the butterfly fly? 50 = middle, higher = closer to the top (now " + Math.round(targetPercent * 100) + "):");
         System.out.println("Tip: go higher if it hits the bottom flowers, lower if it hits the top ones.");
         String line = sc.nextLine().trim();
         try {
@@ -405,7 +424,8 @@ public class AutoFlappy {
             gameBottom = Integer.parseInt(props.getProperty("gameBottom"));
             flappyLeft = Integer.parseInt(props.getProperty("flappyLeft"));
             flappyRight = Integer.parseInt(props.getProperty("flappyRight"));
-            targetPercent = Double.parseDouble(props.getProperty("targetPercent"));
+            // Saved as "aim" since the flap logic changed; older "targetPercent" values don't carry over
+            targetPercent = Double.parseDouble(props.getProperty("aim", "0.5"));
             setUp = true;
             System.out.println("Loaded your setup from last time (type setup to redo it).");
         } catch (Exception e) {
@@ -421,7 +441,7 @@ public class AutoFlappy {
         props.setProperty("gameBottom", String.valueOf(gameBottom));
         props.setProperty("flappyLeft", String.valueOf(flappyLeft));
         props.setProperty("flappyRight", String.valueOf(flappyRight));
-        props.setProperty("targetPercent", String.valueOf(targetPercent));
+        props.setProperty("aim", String.valueOf(targetPercent));
         try (OutputStream out = new FileOutputStream(SETTINGS_FILE)) {
             props.store(out, "AutoFlappy setup");
         } catch (Exception e) {
